@@ -1,114 +1,87 @@
-import os
-import numpy as np
-import joblib
 import torch
 import torch.nn as nn
-from sklearn.svm import SVC
-from sklearn.metrics import classification_report, accuracy_score
-from torch.utils.data import DataLoader
-from models.Hybrid.sequence_hybrid import FlowSequenceDataset
+import torch.nn.functional as F
 
-class CNNLSTMExtractor(nn.Module):
-    """
-    Extrator de features CNN -> LSTM.
-    """
-    def __init__(self, input_features: int, cnn_channels: int = 32, lstm_hidden: int = 64):
+class ModelHybrid(nn.Module):
+    def __init__(self,
+                 seq_len: int,
+                 n_features: int,
+                 lstm_hidden_size: int,
+                 lstm_num_layers: int,
+                 num_classes: int):
+        """
+        seq_len          -> comprimento da janela
+        n_features       -> features por passo
+        lstm_hidden_size -> tamanho do hidden da LSTM
+        lstm_num_layers  -> camadas empilhadas da LSTM
+        num_classes      -> número de classes finais
+        """
         super().__init__()
-        self.cnn = nn.Sequential(
-            nn.Conv1d(input_features, cnn_channels, kernel_size=3, padding=1),
-            nn.ReLU(),
-            nn.MaxPool1d(2)
-        )
-        self.lstm = nn.LSTM(cnn_channels, lstm_hidden, batch_first=True)
-        self.hidden_size = lstm_hidden
+
+        # CNN2D branch
+        self.conv1 = nn.Conv2d(1,   32, kernel_size=(3,3), padding=1)
+        self.bn1   = nn.BatchNorm2d(32)
+        self.conv2 = nn.Conv2d(32,  64, kernel_size=(3,3), padding=1)
+        self.bn2   = nn.BatchNorm2d(64)
+        self.conv3 = nn.Conv2d(64, 128, kernel_size=(3,3), padding=1)
+        self.bn3   = nn.BatchNorm2d(128)
+        self.conv4 = nn.Conv2d(128,256, kernel_size=(3,3), padding=1)
+        self.bn4   = nn.BatchNorm2d(256)
+        self.pool  = nn.MaxPool2d((2,1))
+        self.drop  = nn.Dropout(0.4)
+        self.adapt = nn.AdaptiveAvgPool2d((1,1))
+
+        # LSTM branch
+        self.lstm = nn.LSTM(input_size   = n_features,
+                            hidden_size  = lstm_hidden_size,
+                            num_layers   = lstm_num_layers,
+                            batch_first  = True)
+
+        # Classifier
+        self.fc1 = nn.Linear(256 + lstm_hidden_size, 128)
+        self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x):
-        # x: [batch, seq_len, features]
-        x = x.permute(0,2,1)               # [batch, features, seq_len]
-        x = self.cnn(x)                   # [batch, channels, seq_len//2]
-        x = x.permute(0,2,1)             # [batch, seq_len//2, channels]
-        _, (h_n, _) = self.lstm(x)       # h_n: [1, batch, hidden]
-        return h_n[-1]                   # [batch, hidden]
+        # x: [B, seq_len, n_features]
+        B = x.size(0)
 
+        # CNN2D branch
+        x_c = x.unsqueeze(1)                  # [B,1,seq_len,n_features]
+        x_c = F.relu(self.bn1(self.conv1(x_c)))
+        x_c = F.relu(self.bn2(self.conv2(x_c)))
+        x_c = self.pool(x_c)
+        x_c = F.relu(self.bn3(self.conv3(x_c)))
+        x_c = F.relu(self.bn4(self.conv4(x_c)))
+        x_c = self.pool(x_c)
+        x_c = self.drop(x_c)
+        x_c = self.adapt(x_c)                 # [B,256,1,1]
+        x_c = x_c.view(B, 256)                # [B,256]
 
-def train_feature_extractor(train_csv: str,
-                            seq_len: int = 10,
-                            batch_size: int = 64,
-                            epochs: int = 10,
-                            lr: float = 1e-3,
-                            device: str = 'cpu',
-                            save_dir: str = 'models'):
-    """
-    Treina CNN+LSTM e salva pesos.
-    Retorna o extrator treinado e o DataLoader de treino.
-    """
-    os.makedirs(save_dir, exist_ok=True)
-    ds = FlowSequenceDataset(train_csv, seq_len)
-    loader = DataLoader(ds, batch_size=batch_size, shuffle=True)
-    model = CNNLSTMExtractor(input_features=ds.sequences.shape[2]).to(device)
-    classifier = nn.Linear(model.hidden_size, len(np.unique(ds.seq_labels))).to(device)
-    criterion = nn.CrossEntropyLoss()
-    optimizer = torch.optim.Adam(list(model.parameters()) + list(classifier.parameters()), lr=lr)
+        # LSTM branch
+        _, (h_n, _) = self.lstm(x)            # h_n[-1]: [B, hidden]
+        h_last = h_n[-1]
 
-    model.train()
-    for epoch in range(1, epochs+1):
-        total_loss = 0.0
-        for x, y in loader:
-            x, y = x.to(device), y.to(device)
-            feats = model(x)
-            logits = classifier(feats)
-            loss = criterion(logits, y)
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item() * x.size(0)
-        print(f"Epoch {epoch}/{epochs} - Loss: {total_loss/len(ds):.4f}")
+        # concat & classify
+        f = torch.cat([x_c, h_last], dim=1)   # [B,256+hidden]
+        f = F.relu(self.fc1(f))
+        return self.fc2(f)                    # [B,num_classes]
 
-    torch.save({'extractor': model.state_dict(),
-                'classifier': classifier.state_dict()},
-               os.path.join(save_dir, 'cnn_lstm.pth'))
-    return model, loader
+    def extract_features(self, x):
+        """Retorna [B, 256 + hidden_size] sem passar pelo fc final."""
+        B = x.size(0)
+        # mesma rotina CNN+LSTM que no forward, mas sem a MLP final
+        x_c = x.unsqueeze(1)
+        x_c = F.relu(self.bn1(self.conv1(x_c)))
+        x_c = F.relu(self.bn2(self.conv2(x_c)))
+        x_c = self.pool(x_c)
+        x_c = F.relu(self.bn3(self.conv3(x_c)))
+        x_c = F.relu(self.bn4(self.conv4(x_c)))
+        x_c = self.pool(x_c)
+        x_c = self.drop(x_c)
+        x_c = self.adapt(x_c)
+        x_c = x_c.view(B, 256)
 
+        _, (h_n, _) = self.lstm(x)
+        h_last = h_n[-1]
 
-def extract_features(model: nn.Module,
-                     loader: DataLoader,
-                     device: str = 'cpu'):
-    """
-    Extrai features usando o extractor CNN-LSTM.
-    """
-    model.eval()
-    feats, labels = [], []
-    with torch.no_grad():
-        for x, y in loader:
-            x = x.to(device)
-            feats.append(model(x).cpu().numpy())
-            labels.append(y.numpy())
-    return np.vstack(feats), np.concatenate(labels)
-
-
-def train_svm(X: np.ndarray,
-              y: np.ndarray,
-              kernel: str = 'rbf',
-              C: float = 1.0,
-              svm_path: str = 'models/svm_model.joblib'):
-    """
-    Treina e salva um classificador SVM sobre as features.
-    """
-    svm = SVC(kernel=kernel, C=C, probability=True)
-    svm.fit(X, y)
-    joblib.dump(svm, svm_path)
-    print(f"SVM trained and saved to {svm_path}")
-    return svm
-
-
-def evaluate_hybrid(model: nn.Module,
-                    loader: DataLoader,
-                    svm: SVC,
-                    device: str = 'cpu'):
-    """
-    Avalia o modelo híbrido no conjunto fornecido.
-    """
-    feats, trues = extract_features(model, loader, device)
-    preds = svm.predict(feats)
-    print(classification_report(trues, preds))
-    print("Accuracy:", accuracy_score(trues, preds))
+        return torch.cat([x_c, h_last], dim=1)
