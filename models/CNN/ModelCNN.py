@@ -1,21 +1,5 @@
-import torch
-import os
 import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
-import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix
-)
-from sklearn.preprocessing import StandardScaler
-import torch.optim as optim
 import torch.nn.functional as F
-
-SEED = 42
-torch.manual_seed(SEED)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Usando dispositivo: {device}")
 
 class CNN(nn.Module):
     def __init__(self, input_channels, input_length, num_classes):
