@@ -1,35 +1,22 @@
 import torch
-import os
-import torch.nn as nn
-from torch.utils.data import Dataset, DataLoader
+from torch.utils.data import Dataset
 import pandas as pd
-from sklearn.metrics import (
-    accuracy_score,
-    classification_report,
-    confusion_matrix
-)
-from sklearn.preprocessing import StandardScaler
-import torch.optim as optim
-import torch.nn.functional as F
-
-SEED = 42
-torch.manual_seed(SEED)
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Usando dispositivo: {device}")
+from sklearn.preprocessing import MinMaxScaler
+import numpy as np
 
 class SequenceDataset(Dataset):
-    def __init__(self, path, sequence_length, column_to_remove=None, normalize=True, mode='lstm'):
+    def __init__(self, path, sequence_length, column_to_remove=None, normalize=True, mode=None):
         df = pd.read_csv(path, sep=';')
 
         if column_to_remove and column_to_remove in df.columns:
             df = df.drop(columns=[column_to_remove])
 
-        data = df.values
+        # data = df.values
         features = df.iloc[:, :-1].values
         labels = df.iloc[:, -1].values
 
         if normalize:
-            scaler = StandardScaler()
+            scaler = MinMaxScaler(feature_range=(-1, 1))
             features = scaler.fit_transform(features)
 
         sequences = []
@@ -40,8 +27,8 @@ class SequenceDataset(Dataset):
             sequences.append(seq)
             sequence_labels.append(label)
         
-        # Tensor inicial: [n_samples, seq_len, n_features]
-        x = torch.tensor(sequences, dtype=torch.float32)
+        arr = np.stack(sequences, axis=0).astype(np.float32)   # shape: [n_samples, seq_len, n_features]
+        x   = torch.from_numpy(arr)
         y = torch.tensor(sequence_labels, dtype=torch.long)
 
         # Ajusta formato conforme o modo desejado
@@ -53,8 +40,12 @@ class SequenceDataset(Dataset):
             # x: [n_samples, seq_len, n_features]
             x = x.permute(0, 2, 1)            
             self.sequences = x
+        elif mode == 'cnn2d':
+            x = x.unsqueeze(-1)          # [N,5,9,1]
+            x = x.permute(0, 2, 1, 3)    # [N, 9, 5, 1]
+            self.sequences = x
         else:
-            raise ValueError(f"Modo desconhecido '{mode}'. Escolha 'lstm', 'cnn1d' ou 'cnn2d'.")
+            raise ValueError(f"Modo desconhecido '{mode}'. Escolha 'lstm'  ou 'cnn1d'")
 
         self.labels = y
         self.mode = mode
