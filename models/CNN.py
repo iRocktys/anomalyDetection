@@ -87,7 +87,7 @@ class CNN(nn.Module):
             # salva se for melhor e acima do threshold
             if val_acc >= threshold and val_acc > best_acc:
                 best_acc = val_acc
-                fname = f"CNN_{val_acc:.4f}.pth"
+                fname = f"CNN_{val_acc:.2f}.pth"
                 torch.save(self.state_dict(), os.path.join(save_dir, fname))
                 print(f"→ Checkpoint salvo: {fname}")
 

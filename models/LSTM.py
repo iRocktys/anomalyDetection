@@ -85,7 +85,7 @@ class LSTM(nn.Module):
             # salva apenas se superar threshold e for melhor que best_acc
             if val_acc >= threshold and val_acc > best_acc:
                 best_acc = val_acc
-                fname = f"LSTM_{val_acc:.4f}.pth"
+                fname = f"LSTM_{val_acc:.2f}.pth"
                 torch.save(self.state_dict(), os.path.join(save_dir, fname))
                 print(f"→ Checkpoint salvo: {fname}")
 
