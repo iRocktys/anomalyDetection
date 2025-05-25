@@ -65,58 +65,90 @@ class ModelHybridAttnSVM(nn.Module):
         return h_n[-1].cpu().numpy()            # [B, lstm_hidden]
 
     def train_model(self,
-                    train_loader: DataLoader,
-                    valid_loader: DataLoader,
-                    device: str = 'cpu',
-                    epochs: int = 15,
-                    lr: float = 1e-3,
-                    save_dir: str = 'output/Hybrid',
-                    threshold: float = 0.87):
-        """
-        Treina CNN+LSTM e salva checkpoints somente se val_acc >= threshold.
-        Arquivos salvos como ModelHybridAttnSVM_<acc>.pth
-        """
-        os.makedirs(save_dir, exist_ok=True)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        criterion = nn.CrossEntropyLoss()
-        best_loss = float('inf')
+                train_loader: DataLoader,
+                valid_loader: DataLoader,
+                device: str = 'cpu',
+                epochs: int = 30,
+                lr: float = 1e-3,
+                save_dir: str = 'output/Hybrid',
+                threshold: float = 0.87,
+                patience: int = 5):
+      """
+      Treina CNN+LSTM com Early Stopping + ReduceLROnPlateau,
+      salvando checkpoints somente quando:
+        - val_acc >= threshold
+        - val_acc > best_acc OR val_loss < best_loss
+      e nomeando o arquivo como Hybrid_<val_acc>.pth
+      """
+      os.makedirs(save_dir, exist_ok=True)
+      optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
+                                                            mode='min',
+                                                            factor=0.5,
+                                                            patience=20)
+      criterion = nn.CrossEntropyLoss()
 
-        for ep in range(1, epochs + 1):
-            # --- treinamento ---
-            self.to(device).train()
-            total_loss, n = 0.0, 0
-            for x, y in train_loader:
-                x, y = x.to(device), y.to(device)
-                optimizer.zero_grad()
-                logits = self(x)
-                loss   = criterion(logits, y)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item() * x.size(0)
-                n += x.size(0)
-            train_loss = total_loss / n
+      best_acc = threshold
+      best_loss = float('inf')
+      epochs_no_improve = 0
 
-            # --- validação ---
-            self.to(device).eval()
-            preds, trues = [], []
-            with torch.no_grad():
-                for x, y in valid_loader:
-                    x = x.to(device)
-                    out = self(x)
-                    p   = torch.argmax(out, dim=1).cpu().numpy()
-                    preds.extend(p)
-                    trues.extend(y.cpu().numpy())
-            val_acc = accuracy_score(trues, preds)
+      for ep in range(1, epochs+1):
+          # --- Treino ---
+          self.train().to(device)
+          train_loss, train_n = 0.0, 0
+          for x,y in train_loader:
+              x, y = x.to(device), y.to(device)
+              optimizer.zero_grad()
+              logits = self(x)
+              loss   = criterion(logits, y)
+              loss.backward()
+              optimizer.step()
+              train_loss += loss.item() * x.size(0)
+              train_n    += x.size(0)
+          train_loss /= train_n
 
-            print(f"Epoch {ep}/{epochs} - Train Loss: {train_loss:.4f} - Val Acc: {val_acc:.4f}")
+          # --- Validação ---
+          self.eval().to(device)
+          val_loss, val_n = 0.0, 0
+          preds, trues = [], []
+          with torch.no_grad():
+              for x,y in valid_loader:
+                  x, y = x.to(device), y.to(device)
+                  out = self(x)
+                  loss = criterion(out, y)
+                  val_loss += loss.item() * x.size(0)
+                  val_n    += x.size(0)
+                  p = torch.argmax(out, dim=1).cpu().numpy()
+                  preds.extend(p)
+                  trues.extend(y.cpu().numpy())
+          val_loss /= val_n
+          val_acc  = accuracy_score(trues, preds)
 
-            # salva se for melhor e acima do threshold
-            if val_acc >= threshold and train_loss < best_loss:
-                fname = f"Hybrid_{val_acc:.2f}.pth"
-                torch.save(self.state_dict(), os.path.join(save_dir, fname))
-                print(f"→ Checkpoint salvo: {fname}")
+          print(f"Epoch {ep}/{epochs} – "
+                f"Train Loss: {train_loss:.4f}  "
+                f"Val Loss: {val_loss:.4f}  "
+                f"Val Acc: {val_acc:.4f}")
 
-        return self
+          # Ajusta lr se necessário
+          scheduler.step(val_loss)
+
+          # Critério de salvamento
+          improved = (val_acc > best_acc) or (val_loss < best_loss)
+          if val_acc >= threshold and improved:
+              best_acc = max(val_acc, best_acc)
+              best_loss = min(val_loss, best_loss)
+              epochs_no_improve = 0
+              fname = f"Hybrid_best_model.pth"
+              torch.save(self.state_dict(), os.path.join(save_dir, fname))
+              print(f"→ Checkpoint salvo: {fname}")
+          else:
+              epochs_no_improve += 1
+              if epochs_no_improve >= patience:
+                  print(f"Early stopping após {ep} épocas sem melhora.")
+                  break
+
+      return self
+
 
     def train_svm(self,
                   train_loader: DataLoader,
