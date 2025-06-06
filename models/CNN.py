@@ -3,36 +3,105 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, f1_score,classification_report
+from sklearn.metrics import accuracy_score,classification_report
 
 class CNN(nn.Module):
-    def __init__(self, input_channels, input_length, num_classes):
-        super().__init__()
-        # Blocos convolucionais
-        self.conv1   = nn.Conv1d(input_channels,  32, kernel_size=3, padding=1)
-        self.bn1     = nn.BatchNorm1d(32)
-        self.conv2   = nn.Conv1d(32,  64, kernel_size=3, padding=1)
-        self.bn2     = nn.BatchNorm1d(64)
-        self.conv3   = nn.Conv1d(64, 128, kernel_size=3, padding=1)
-        self.bn3     = nn.BatchNorm1d(128)
-        self.conv4   = nn.Conv1d(128,256, kernel_size=3, padding=1)
-        self.bn4     = nn.BatchNorm1d(256)
-        self.dropout = nn.Dropout(p=0.4)
+    # MODELO 1 - Inicial (modelo 2 foi considerado melhor pelo grafico de treinamento do Loss na validação e treinamento)
+    # def __init__(self, input_channels, input_length, num_classes):
+    #     super().__init__()
+    #     # Blocos convolucionais
+    #     self.conv1   = nn.Conv1d(input_channels,  32, kernel_size=3, padding=1)
+    #     self.bn1     = nn.BatchNorm1d(32)
+    #     self.conv2   = nn.Conv1d(32,  64, kernel_size=3, padding=1)
+    #     self.bn2     = nn.BatchNorm1d(64)
+    #     self.conv3   = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+    #     self.bn3     = nn.BatchNorm1d(128)
+    #     self.conv4   = nn.Conv1d(128,256, kernel_size=3, padding=1)
+    #     self.bn4     = nn.BatchNorm1d(256)
+    #     self.dropout = nn.Dropout(p=0.4)
 
-        # Fully connected
-        self.fc1 = nn.Linear(256 * input_length, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+    #     # Fully connected
+    #     self.fc1 = nn.Linear(256 * input_length, 128)
+    #     self.fc2 = nn.Linear(128, num_classes)
+
+    # def forward(self, x):
+    #     # x: [B, n_features, seq_len]
+    #     x = F.relu(self.bn1(self.conv1(x)))
+    #     x = F.relu(self.bn2(self.conv2(x)))
+    #     x = F.relu(self.bn3(self.conv3(x)))
+    #     x = F.relu(self.bn4(self.conv4(x)))
+    #     x = self.dropout(x)
+    #     x = x.view(x.size(0), -1)
+    #     x = F.relu(self.fc1(x))
+    #     return self.fc2(x)
+    
+    # MODELO 2 - pooling e GAP - MELHOR ATÉ ENTÃO
+    def __init__(self, input_channels, input_length, num_classes):
+      super().__init__()
+
+      self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=3, padding=1)
+      self.pool1 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+      self.pool2 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+      self.pool3 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv4 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+      self.pool4 = nn.MaxPool1d(kernel_size=2)
+
+      self.dropout = nn.Dropout(p=0.4)
+
+      self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+      self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
-        # x: [B, n_features, seq_len]
-        x = F.relu(self.bn1(self.conv1(x)))
-        x = F.relu(self.bn2(self.conv2(x)))
-        x = F.relu(self.bn3(self.conv3(x)))
-        x = F.relu(self.bn4(self.conv4(x)))
-        x = self.dropout(x)
-        x = x.view(x.size(0), -1)
-        x = F.relu(self.fc1(x))
-        return self.fc2(x)
+      x = self.pool1(F.relu(self.conv1(x)))
+      x = self.pool2(F.relu(self.conv2(x)))
+      x = self.pool3(F.relu(self.conv3(x)))
+      x = self.pool4(F.relu(self.conv4(x)))
+      x = self.dropout(x)
+      x = self.global_avg_pool(x)  # [B, 256, 1]
+      x = x.squeeze(-1)            # [B, 256]
+      return self.fc(x)            # [B, num_classes]
+
+    # MODELO 3 - pooling, GAP e BatchNorm1d
+    # def __init__(self, input_channels, input_length, num_classes):
+    #   super().__init__()
+
+    #   self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=3, padding=1)
+    #   self.bn1   = nn.BatchNorm1d(32)
+    #   self.pool1 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+    #   self.bn2   = nn.BatchNorm1d(64)
+    #   self.pool2 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+    #   self.bn3   = nn.BatchNorm1d(128)
+    #   self.pool3 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv4 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+    #   self.bn4   = nn.BatchNorm1d(256)
+    #   self.pool4 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.dropout = nn.Dropout(p=0.4)
+
+    #   # Agrupamento médio global (GAP) substitui FC
+    #   self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+    #   self.fc = nn.Linear(256, num_classes)
+
+    # def forward(self, x):
+    #   x = self.pool1(F.relu(self.bn1(self.conv1(x))))
+    #   x = self.pool2(F.relu(self.bn2(self.conv2(x))))
+    #   x = self.pool3(F.relu(self.bn3(self.conv3(x))))
+    #   x = self.pool4(F.relu(self.bn4(self.conv4(x))))
+    #   x = self.dropout(x)
+    #   x = self.global_avg_pool(x)  # shape: [B, 256, 1]
+    #   x = x.squeeze(-1)            # shape: [B, 256]
+    #   return self.fc(x)            # shape: [B, num_classes]
+
 
     def train_model(self,
                     train_loader: DataLoader,
@@ -42,13 +111,8 @@ class CNN(nn.Module):
                     lr: float = 1e-3,
                     save_dir: str = 'output/CNN',
                     threshold: float = 0.87,
-                    patience: int = 5):
-        """
-        Treina a CNN com EarlyStopping e ReduceLROnPlateau.
-        Salva sempre no mesmo arquivo 'CNN_best_model.pth' quando:
-          - val_acc >= threshold
-          - AND (val_acc > best_acc OR val_loss < best_loss)
-        """
+                    patience: int = 20):
+      
         os.makedirs(save_dir, exist_ok=True)
         self.to(device)
 
