@@ -2,65 +2,185 @@ import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from sklearn.metrics import classification_report, accuracy_score
 from torch.utils.data import DataLoader
+from sklearn.metrics import accuracy_score,classification_report
 
 class CNN(nn.Module):
-    def __init__(self, input_channels, input_length, num_classes):
-        super().__init__()
-        # Bloco conv1
-        self.conv1 = nn.Conv1d(input_channels,  32, kernel_size=3, padding=1)
-        self.bn1   = nn.BatchNorm1d(32)
-        # Bloco conv2
-        self.conv2 = nn.Conv1d(32,  64, kernel_size=3, padding=1)
-        self.bn2   = nn.BatchNorm1d(64)
-        # Bloco conv3
-        self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
-        self.bn3   = nn.BatchNorm1d(128)
-        # Bloco conv4
-        self.conv4 = nn.Conv1d(128,256, kernel_size=3, padding=1)
-        self.bn4   = nn.BatchNorm1d(256)
-        self.dropout = nn.Dropout(0.4)
+    # MODELO 1 - Inicial (modelo 2 foi considerado melhor pelo grafico de treinamento do Loss na validação e treinamento)
+    # def __init__(self, input_channels, input_length, num_classes):
+    #     super().__init__()
+    #     # Blocos convolucionais
+    #     self.conv1   = nn.Conv1d(input_channels,  32, kernel_size=3, padding=1)
+    #     self.bn1     = nn.BatchNorm1d(32)
+    #     self.conv2   = nn.Conv1d(32,  64, kernel_size=3, padding=1)
+    #     self.bn2     = nn.BatchNorm1d(64)
+    #     self.conv3   = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+    #     self.bn3     = nn.BatchNorm1d(128)
+    #     self.conv4   = nn.Conv1d(128,256, kernel_size=3, padding=1)
+    #     self.bn4     = nn.BatchNorm1d(256)
+    #     self.dropout = nn.Dropout(p=0.4)
 
-        # Fully connected
-        self.fc1 = nn.Linear(256 * input_length, 128)
-        self.fc2 = nn.Linear(128, num_classes)
+    #     # Fully connected
+    #     self.fc1 = nn.Linear(256 * input_length, 128)
+    #     self.fc2 = nn.Linear(128, num_classes)
+
+    # def forward(self, x):
+    #     # x: [B, n_features, seq_len]
+    #     x = F.relu(self.bn1(self.conv1(x)))
+    #     x = F.relu(self.bn2(self.conv2(x)))
+    #     x = F.relu(self.bn3(self.conv3(x)))
+    #     x = F.relu(self.bn4(self.conv4(x)))
+    #     x = self.dropout(x)
+    #     x = x.view(x.size(0), -1)
+    #     x = F.relu(self.fc1(x))
+    #     return self.fc2(x)
+    
+    # MODELO 2 - pooling e GAP - MELHOR ATÉ ENTÃO
+    def __init__(self, input_channels, input_length, num_classes):
+      super().__init__()
+
+      self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=3, padding=1)
+      self.pool1 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+      self.pool2 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+      self.pool3 = nn.MaxPool1d(kernel_size=2)
+
+      self.conv4 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+      self.pool4 = nn.MaxPool1d(kernel_size=2)
+
+      self.dropout = nn.Dropout(p=0.4)
+
+      self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+      self.fc = nn.Linear(256, num_classes)
 
     def forward(self, x):
-        # x já é [B, n_features, seq_len], então NÃO permutar
-        x = F.relu(self.bn1(self.conv1(x)))   # [B,32, seq_len]
-        x = F.relu(self.bn2(self.conv2(x)))   # [B,64, seq_len]
-        x = F.relu(self.bn3(self.conv3(x)))   # [B,128, seq_len]
-        x = F.relu(self.bn4(self.conv4(x)))   # [B,256, seq_len]
-        x = self.dropout(x)
-        x = x.view(x.size(0), -1)             # [B, 256*seq_len]
-        x = F.relu(self.fc1(x))               # [B, 128]
-        return self.fc2(x)                    # [B, num_classes]
+      x = self.pool1(F.relu(self.conv1(x)))
+      x = self.pool2(F.relu(self.conv2(x)))
+      x = self.pool3(F.relu(self.conv3(x)))
+      x = self.pool4(F.relu(self.conv4(x)))
+      x = self.dropout(x)
+      x = self.global_avg_pool(x)  # [B, 256, 1]
+      x = x.squeeze(-1)            # [B, 256]
+      return self.fc(x)            # [B, num_classes]
+
+    # MODELO 3 - pooling, GAP e BatchNorm1d
+    # def __init__(self, input_channels, input_length, num_classes):
+    #   super().__init__()
+
+    #   self.conv1 = nn.Conv1d(input_channels, 32, kernel_size=3, padding=1)
+    #   self.bn1   = nn.BatchNorm1d(32)
+    #   self.pool1 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv2 = nn.Conv1d(32, 64, kernel_size=3, padding=1)
+    #   self.bn2   = nn.BatchNorm1d(64)
+    #   self.pool2 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv3 = nn.Conv1d(64, 128, kernel_size=3, padding=1)
+    #   self.bn3   = nn.BatchNorm1d(128)
+    #   self.pool3 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.conv4 = nn.Conv1d(128, 256, kernel_size=3, padding=1)
+    #   self.bn4   = nn.BatchNorm1d(256)
+    #   self.pool4 = nn.MaxPool1d(kernel_size=2)
+
+    #   self.dropout = nn.Dropout(p=0.4)
+
+    #   # Agrupamento médio global (GAP) substitui FC
+    #   self.global_avg_pool = nn.AdaptiveAvgPool1d(1)
+    #   self.fc = nn.Linear(256, num_classes)
+
+    # def forward(self, x):
+    #   x = self.pool1(F.relu(self.bn1(self.conv1(x))))
+    #   x = self.pool2(F.relu(self.bn2(self.conv2(x))))
+    #   x = self.pool3(F.relu(self.bn3(self.conv3(x))))
+    #   x = self.pool4(F.relu(self.bn4(self.conv4(x))))
+    #   x = self.dropout(x)
+    #   x = self.global_avg_pool(x)  # shape: [B, 256, 1]
+    #   x = x.squeeze(-1)            # shape: [B, 256]
+    #   return self.fc(x)            # shape: [B, num_classes]
+
 
     def train_model(self,
                     train_loader: DataLoader,
+                    valid_loader: DataLoader,
                     device: str = 'cpu',
                     epochs: int = 20,
                     lr: float = 1e-3,
-                    save_path: str = 'output/CNN/cnn_model.pth'):
-        """Treina a CNN e salva os pesos."""
-        self.to(device).train()
+                    save_dir: str = 'output/CNN',
+                    threshold: float = 0.87,
+                    patience: int = 20):
+      
+        os.makedirs(save_dir, exist_ok=True)
+        self.to(device)
+
         optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+            optimizer, mode='min', factor=0.5, patience=2
+        )
         criterion = nn.CrossEntropyLoss()
-        for epoch in range(1, epochs+1):
-            total_loss, n = 0.0, 0
+
+        best_acc = 0.0
+        best_loss = float('inf')
+        epochs_no_improve = 0
+
+        for ep in range(1, epochs + 1):
+            # --- Treinamento ---
+            self.train()
+            train_loss, n = 0.0, 0
             for x, y in train_loader:
                 x, y = x.to(device), y.to(device)
                 optimizer.zero_grad()
-                logits = self(x)
-                loss   = criterion(logits, y)
+                out  = self(x)
+                loss = criterion(out, y)
                 loss.backward()
                 optimizer.step()
-                total_loss += loss.item() * x.size(0)
+                train_loss += loss.item() * x.size(0)
                 n += x.size(0)
-            print(f"Epoch {epoch}/{epochs} - Loss: {total_loss/n:.4f}")
-        os.makedirs(os.path.dirname(save_path), exist_ok=True)
-        torch.save(self.state_dict(), save_path)
+            train_loss /= n
+
+            # --- Validação ---
+            self.eval()
+            val_loss, m = 0.0, 0
+            preds, trues = [], []
+            with torch.no_grad():
+                for x, y in valid_loader:
+                    x, y = x.to(device), y.to(device)
+                    out  = self(x)
+                    loss = criterion(out, y)
+                    val_loss += loss.item() * x.size(0)
+                    m += x.size(0)
+                    p = torch.argmax(out, dim=1).cpu().numpy()
+                    preds.extend(p)
+                    trues.extend(y.cpu().numpy())
+            val_loss /= m
+            val_acc  = accuracy_score(trues, preds)
+
+            print(f"Epoch {ep}/{epochs} – "
+                  f"Train Loss: {train_loss:.4f}  "
+                  f"Val Loss:   {val_loss:.4f}  "
+                  f"Val Acc:    {val_acc:.4f}")
+
+            # Ajusta taxa de aprendizado
+            scheduler.step(val_loss)
+
+            # Critério de salvamento
+            improved = (val_acc > best_acc) or (val_loss < best_loss)
+            if val_acc >= threshold and improved:
+                best_acc = max(val_acc, best_acc)
+                best_loss = min(val_loss, best_loss)
+                epochs_no_improve = 0
+                ckpt_path = os.path.join(save_dir, 'CNN_best_model.pth')
+                torch.save(self.state_dict(), ckpt_path)
+                print(f"→ Novo melhor modelo salvo em '{ckpt_path}'")
+            else:
+                epochs_no_improve += 1
+                if epochs_no_improve >= patience:
+                    print(f"Early stopping após {ep} épocas sem melhora.")
+                    break
+
         return self
 
     def evaluate(self,
@@ -68,14 +188,15 @@ class CNN(nn.Module):
                  device: str = 'cpu'):
         """Avalia a CNN no DataLoader fornecido."""
         self.to(device).eval()
-        all_preds, all_labels = [], []
+        preds, trues = [], []
         with torch.no_grad():
             for x, y in loader:
-                x = x.to(device)
-                logits = self(x)
-                preds  = torch.argmax(logits, dim=1).cpu().numpy()
-                all_preds.extend(preds)
-                all_labels.extend(y.numpy())
+                x, y = x.to(device), y.to(device)
+                out = self(x)
+                p   = torch.argmax(out, dim=1).cpu().numpy()
+                preds.extend(p)
+                trues.extend(y.cpu().numpy())
+
         print("\n=== Classification Report ===")
-        print(classification_report(all_labels, all_preds))
-        print("Accuracy:", accuracy_score(all_labels, all_preds))
+        print(classification_report(trues, preds))
+        print("Accuracy:", accuracy_score(trues, preds))
