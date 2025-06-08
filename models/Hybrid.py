@@ -19,36 +19,48 @@ class ModelHybridAttnSVM(nn.Module):
         super().__init__()
         # --- CNN1D branch ---
         self.conv1 = nn.Conv1d(in_channels=n_features, out_channels=32, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv1d(in_channels=32,       out_channels=64, kernel_size=3, padding=1)
-        self.conv3 = nn.Conv1d(in_channels=64,       out_channels=128, kernel_size=3, padding=1)
-        self.relu  = nn.ReLU()
-        self.pool  = nn.MaxPool1d(kernel_size=2)
-        self.drop  = nn.Dropout(p=0.5)
+        self.conv2 = nn.Conv1d(in_channels=32, out_channels=64, kernel_size=3, padding=1)
+        self.conv3 = nn.Conv1d(in_channels=64, out_channels=128, kernel_size=3, padding=1)
+        self.relu = nn.ReLU()
+        self.pool = nn.MaxPool1d(kernel_size=2)
+        self.drop = nn.Dropout(p=0.5)
 
-        # --- LSTM branch ---
-        self.lstm = nn.LSTM(input_size=128,
-                            hidden_size=lstm_hidden,
-                            num_layers=lstm_layers,
-                            batch_first=True)
+        # --- Enhanced LSTM branch ---
+        self.lstm1 = nn.LSTM(input_size=128,
+                             hidden_size=lstm_hidden // 2,
+                             num_layers=1,
+                             batch_first=True)
+        self.lstm2 = nn.LSTM(input_size=lstm_hidden // 2,
+                             hidden_size=lstm_hidden,
+                             num_layers=1,
+                             batch_first=True,
+                             dropout=0.2)
+        self.lstm3 = nn.LSTM(input_size=lstm_hidden,
+                             hidden_size=lstm_hidden // 2,
+                             num_layers=1,
+                             batch_first=True,
+                             dropout=0.2)
 
         # --- MLP head ---
-        self.fc1 = nn.Linear(lstm_hidden, 128)
+        self.fc1 = nn.Linear(lstm_hidden // 2, 128)
         self.fc2 = nn.Linear(128, num_classes)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         # x: [B, seq_len, n_features]
-        x = x.permute(0, 2, 1)                   # [B, n_features, seq_len]
-        x = self.pool(self.relu(self.conv1(x)))  # [B, 32, seq_len/2]
-        x = self.pool(self.relu(self.conv2(x)))  # [B, 64, seq_len/4]
-        x = self.pool(self.relu(self.conv3(x)))  # [B, 128, seq_len/8]
+        x = x.permute(0, 2, 1)  # [B, n_features, seq_len]
+        x = self.pool(self.relu(self.conv1(x)))
+        x = self.pool(self.relu(self.conv2(x)))
+        x = self.pool(self.relu(self.conv3(x)))
         x = self.drop(x)
-        x = x.permute(0, 2, 1)                   # [B, seq_len/8, 128]
+        x = x.permute(0, 2, 1)  # [B, seq_len//8, 128]
 
-        out, (h_n, _) = self.lstm(x)
-        feats = h_n[-1]                          # [B, lstm_hidden]
+        x, _ = self.lstm1(x)
+        x, _ = self.lstm2(x)
+        x, _ = self.lstm3(x)
+        feats = x[:, -1, :]  # pega último passo temporal
 
-        f = self.relu(self.fc1(feats))           # [B, 128]
-        return self.fc2(f)                       # [B, num_classes]
+        f = self.relu(self.fc1(feats))
+        return self.fc2(f)
 
     @torch.no_grad()
     def extract_features(self, x: torch.Tensor) -> np.ndarray:
@@ -61,8 +73,11 @@ class ModelHybridAttnSVM(nn.Module):
         x = self.drop(x)
         x = x.permute(0, 2, 1)
 
-        out, (h_n, _) = self.lstm(x)
-        return h_n[-1].cpu().numpy()            # [B, lstm_hidden]
+        x, _ = self.lstm1(x)
+        x, _ = self.lstm2(x)
+        x, _ = self.lstm3(x)
+        feats = x[:, -1, :]
+        return feats.cpu().numpy()
 
     def train_model(self,
                 train_loader: DataLoader,
@@ -72,7 +87,7 @@ class ModelHybridAttnSVM(nn.Module):
                 lr: float = 1e-3,
                 save_dir: str = 'output/Hybrid',
                 threshold: float = 0.87,
-                patience: int = 5):
+                patience: int = 15):
       """
       Treina CNN+LSTM com Early Stopping + ReduceLROnPlateau,
       salvando checkpoints somente quando:
