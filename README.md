@@ -1,6 +1,6 @@
 # AnomalyDetection
 
-Repositório de apoio ao projeto de monografia de Leandro Martins Tosta, desenvolvido como parte do trabalho de conclusão de curso em Ciência da Computação. O projeto propõe a aplicação de técnicas de aprendizado profundo (Deep Learning) e aprendizado de máquina (Machine Learning) para detecção de tráfego anômalo em redes de computadores, com foco especial em ataques de negação de serviço distribuído (DDoS) presentes no dataset CICDDoS2019.
+Repositório de apoio ao projeto de monografia, desenvolvido como parte do trabalho de conclusão de curso em Engenharia da Computação. O projeto propõe a aplicação de técnicas de aprendizado profundo (Deep Learning) e aprendizado de máquina (Machine Learning) para detecção de tráfego anômalo em redes de computadores, com foco especial em ataques de negação de serviço distribuído (DDoS) presentes no dataset CICDDoS2019.
 
 ## Objetivo
 
@@ -14,17 +14,7 @@ Implementar e avaliar modelos de detecção de intrusão utilizando diferentes a
   - Extração de características com CNN.
   - Modelagem temporal com múltiplas camadas LSTM.
   - Redução de dimensionalidade via PCA.
-  - Classificação final com SVM (Support Vector Machine).
-
-## Estrutura do Repositório
-
-CNN.py                # Arquitetura da rede convolucional  
-LSTM.py               # Arquitetura da rede LSTM  
-Hybrid.py             # Arquitetura híbrida CNN+LSTM com SVM  
-Sequence.py           # Classe de carregamento e preparação dos dados  
-CompileModels.ipynb   # Pipeline de execução e treinamento  
-output/               # Diretório para salvar modelos e artefatos (não incluído)  
-README.md             # Este documento  
+  - Classificação final com SVM.
 
 ## Execução
 
