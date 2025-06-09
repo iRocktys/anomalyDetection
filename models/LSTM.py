@@ -1,8 +1,18 @@
 import os
+import json
+import numpy as np
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
+import matplotlib.pyplot as plt
+import seaborn as sns
+
 from torch.utils.data import DataLoader
-from sklearn.metrics import accuracy_score, f1_score,classification_report
+from sklearn.metrics import (
+    classification_report, accuracy_score, precision_score, recall_score,
+    f1_score, confusion_matrix, precision_recall_curve, roc_curve, auc
+)
+
 
 class LSTM(nn.Module):
     def __init__(self, input_size, hidden_size, num_layers, output_size):
@@ -120,20 +130,125 @@ class LSTM(nn.Module):
 
         return self
 
-    def evaluate(self,
-                 loader: DataLoader,
-                 device: str = 'cpu'):
-        """Gera classification report e accuracy no loader fornecido."""
-        self.to(device).eval()
-        all_pred, all_true = [], []
-        with torch.no_grad():
-            for x, y in loader:
-                x = x.to(device)
-                out = self(x)
-                preds = torch.argmax(out, dim=1).cpu().numpy()
-                all_pred.extend(preds)
-                all_true.extend(y.numpy())
+    # def evaluate(self,
+    #              loader: DataLoader,
+    #              device: str = 'cpu'):
+    #     """Gera classification report e accuracy no loader fornecido."""
+    #     self.to(device).eval()
+    #     all_pred, all_true = [], []
+    #     with torch.no_grad():
+    #         for x, y in loader:
+    #             x = x.to(device)
+    #             out = self(x)
+    #             preds = torch.argmax(out, dim=1).cpu().numpy()
+    #             all_pred.extend(preds)
+    #             all_true.extend(y.numpy())
 
-        print("\n=== Classification Report ===")
-        print(classification_report(all_true, all_pred))
-        print("Accuracy:", accuracy_score(all_true, all_pred))
+    #     print("\n=== Classification Report ===")
+    #     print(classification_report(all_true, all_pred))
+    #     print("Accuracy:", accuracy_score(all_true, all_pred))
+
+    
+    def evaluate(self, loader: DataLoader, device: str = 'cpu'):
+      """Avalia o modelo binário e gera gráficos e métricas salvas em arquivos."""
+      self.to(device).eval()
+      preds, trues, probs = [], [], []
+
+      with torch.no_grad():
+          for x, y in loader:
+              x, y = x.to(device), y.to(device)
+              out = self(x)
+              prob = torch.softmax(out, dim=1).cpu().numpy()
+
+              if prob.shape[1] == 2:
+                  probs.extend(prob[:, 1])  # probabilidade da classe positiva
+              else:
+                  raise ValueError(
+                      f"Esperado prob.shape[1] == 2 para classificação binária com CrossEntropyLoss, mas recebido shape {prob.shape}"
+                  )
+
+              preds.extend(np.argmax(prob, axis=1))
+              trues.extend(y.cpu().numpy())
+
+      trues = np.array(trues)
+      preds = np.array(preds)
+      probs = np.array(probs)
+
+      result_dir = os.path.join('output', 'resultados', self.__class__.__name__)
+      os.makedirs(result_dir, exist_ok=True)
+
+      # Métricas principais
+      acc     = accuracy_score(trues, preds)
+      prec    = precision_score(trues, preds)
+      rec     = recall_score(trues, preds)
+      f1      = f1_score(trues, preds)
+      fpr, tpr, _ = roc_curve(trues, probs)
+      roc_auc = auc(fpr, tpr)
+      report  = classification_report(trues, preds, digits=4)
+
+      # Exibir no console
+      print("\n=== Classification Report ===")
+      print(report)
+      print(f"Acurácia:  {acc:.4f}")
+      print(f"Precisão:  {prec:.4f}")
+      print(f"Recall:    {rec:.4f}")
+      print(f"F1-Score:  {f1:.4f}")
+      print(f"AUC:       {roc_auc:.4f}")
+
+      # Salvar em classification_report.txt
+      with open(os.path.join(result_dir, 'classification_report.txt'), 'w') as f:
+          f.write("=== Classification Report ===\n")
+          f.write(report)
+          f.write("\n\n")
+          f.write(f"Acurácia:       {acc:.4f}\n")
+          f.write(f"Precisão:       {prec:.4f}\n")
+          f.write(f"Recall:         {rec:.4f}\n")
+          f.write(f"F1-Score:       {f1:.4f}\n")
+          f.write(f"AUC:            {roc_auc:.4f}\n")
+
+      # Salvar em metrics.json
+      metrics_dict = {
+          "acuracia":  round(acc, 4),
+          "precisao":  round(prec, 4),
+          "recall":    round(rec, 4),
+          "f1_score":  round(f1, 4),
+          "auc":       round(roc_auc, 4)
+      }
+      with open(os.path.join(result_dir, 'metrics.json'), 'w') as f:
+          json.dump(metrics_dict, f, indent=4)
+
+      # Matriz de confusão
+      cm = confusion_matrix(trues, preds)
+      plt.figure()
+      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+      plt.title('Matriz de Confusão')
+      plt.xlabel('Predito')
+      plt.ylabel('Real')
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'matriz_confusao.png'))
+      plt.close()
+
+      # Precision vs Recall
+      precision, recall, _ = precision_recall_curve(trues, probs)
+      plt.figure()
+      plt.plot(recall, precision, marker='.')
+      plt.xlabel('Recall')
+      plt.ylabel('Precision')
+      plt.title('Precision vs Recall')
+      plt.grid(True)
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'precision_vs_recall.png'))
+      plt.close()
+
+      # ROC Curve
+      plt.figure()
+      plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.4f}')
+      plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+      plt.xlabel('False Positive Rate')
+      plt.ylabel('True Positive Rate')
+      plt.title('ROC Curve')
+      plt.legend()
+      plt.grid(True)
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'roc_curve.png'))
+      plt.close()

@@ -28,16 +28,16 @@ class ModelHybridAttnSVM(nn.Module):
         # --- Enhanced LSTM branch ---
         self.lstm1 = nn.LSTM(input_size=128,
                              hidden_size=lstm_hidden // 2,
-                             num_layers=1,
+                             num_layers=3,
                              batch_first=True)
         self.lstm2 = nn.LSTM(input_size=lstm_hidden // 2,
                              hidden_size=lstm_hidden,
-                             num_layers=1,
+                             num_layers=3,
                              batch_first=True,
                              dropout=0.2)
         self.lstm3 = nn.LSTM(input_size=lstm_hidden,
                              hidden_size=lstm_hidden // 2,
-                             num_layers=1,
+                             num_layers=3,
                              batch_first=True,
                              dropout=0.2)
 
@@ -193,25 +193,136 @@ class ModelHybridAttnSVM(nn.Module):
         joblib.dump(svm, svm_path)
         return svm
 
-    def evaluate(self,
-                 loader: DataLoader,
-                 device: str = 'cpu',
-                 pca_path: str = 'output/Hybrid/pca.joblib',
-                 svm_path: str = 'output/Hybrid/hybrid_svm.joblib'):
-        """
-        Avalia o pipeline CNN→LSTM→PCA→SVM usando artefatos salvos.
-        """
-        pca = joblib.load(pca_path)
-        svm = joblib.load(svm_path)
-        feats, trues = [], []
-        for x, y in loader:
-            feat = self.extract_features(x)
-            feats.append(feat)
-            trues.append(y.cpu().numpy())
-        X = np.vstack(feats)
-        y_true = np.concatenate(trues)
-        X_pca  = pca.transform(X)
-        y_pred = svm.predict(X_pca)
+    # def evaluate(self,
+    #              loader: DataLoader,
+    #              device: str = 'cpu',
+    #              pca_path: str = 'output/Hybrid/pca.joblib',
+    #              svm_path: str = 'output/Hybrid/hybrid_svm.joblib'):
+    #     """
+    #     Avalia o pipeline CNN→LSTM→PCA→SVM usando artefatos salvos.
+    #     """
+    #     pca = joblib.load(pca_path)
+    #     svm = joblib.load(svm_path)
+    #     feats, trues = [], []
+    #     for x, y in loader:
+    #         feat = self.extract_features(x)
+    #         feats.append(feat)
+    #         trues.append(y.cpu().numpy())
+    #     X = np.vstack(feats)
+    #     y_true = np.concatenate(trues)
+    #     X_pca  = pca.transform(X)
+    #     y_pred = svm.predict(X_pca)
 
-        print(classification_report(y_true, y_pred))
-        print("Accuracy:", accuracy_score(y_true, y_pred))
+    #     print(classification_report(y_true, y_pred))
+    #     print("Accuracy:", accuracy_score(y_true, y_pred))
+    
+    def evaluate(self,
+             loader: DataLoader,
+             device: str = 'cpu',
+             pca_path: str = 'output/Hybrid/pca.joblib',
+             svm_path: str = 'output/Hybrid/hybrid_svm.joblib'):
+      """
+      Avalia o pipeline CNN→LSTM→PCA→SVM e gera métricas, gráficos e arquivos.
+      """
+      import matplotlib.pyplot as plt
+      import seaborn as sns
+      import json
+      from sklearn.metrics import (
+          accuracy_score, precision_score, recall_score, f1_score, roc_curve,
+          auc, precision_recall_curve, confusion_matrix, classification_report
+      )
+
+      self.to(device).eval()
+      pca = joblib.load(pca_path)
+      svm = joblib.load(svm_path)
+      feats, trues, probs = [], [], []
+
+      for x, y in loader:
+          feat = self.extract_features(x)
+          feats.append(feat)
+          trues.extend(y.cpu().numpy())
+
+      X = np.vstack(feats)
+      y_true = np.array(trues)
+      X_pca  = pca.transform(X)
+      y_pred = svm.predict(X_pca)
+      y_proba = svm.predict_proba(X_pca)[:, 1]
+
+      # Métricas principais
+      acc     = accuracy_score(y_true, y_pred)
+      prec    = precision_score(y_true, y_pred)
+      rec     = recall_score(y_true, y_pred)
+      f1      = f1_score(y_true, y_pred)
+      fpr, tpr, _ = roc_curve(y_true, y_proba)
+      roc_auc = auc(fpr, tpr)
+      report  = classification_report(y_true, y_pred, digits=4)
+      precision, recall, _ = precision_recall_curve(y_true, y_proba)
+
+      result_dir = os.path.join('output', 'resultados', 'Hybrid')
+      os.makedirs(result_dir, exist_ok=True)
+
+      # Imprimir no terminal
+      print("\n=== Classification Report ===")
+      print(report)
+      print(f"Acurácia:  {acc:.4f}")
+      print(f"Precisão:  {prec:.4f}")
+      print(f"Recall:    {rec:.4f}")
+      print(f"F1-Score:  {f1:.4f}")
+      print(f"AUC:       {roc_auc:.4f}")
+
+      # Salvar em texto
+      with open(os.path.join(result_dir, 'classification_report.txt'), 'w') as f:
+          f.write("=== Classification Report ===\n")
+          f.write(report)
+          f.write("\n\n")
+          f.write(f"Acurácia:       {acc:.4f}\n")
+          f.write(f"Precisão:       {prec:.4f}\n")
+          f.write(f"Recall:         {rec:.4f}\n")
+          f.write(f"F1-Score:       {f1:.4f}\n")
+          f.write(f"AUC:            {roc_auc:.4f}\n")
+
+      # Salvar métricas numéricas em JSON
+      with open(os.path.join(result_dir, 'metrics.json'), 'w') as f:
+          json.dump({
+              'acuracia': acc,
+              'precisao': prec,
+              'recall': rec,
+              'f1_score': f1,
+              'auc': roc_auc
+          }, f, indent=4)
+
+      # Matriz de Confusão
+      cm = confusion_matrix(y_true, y_pred)
+      plt.figure()
+      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
+      plt.title('Matriz de Confusão')
+      plt.xlabel('Predito')
+      plt.ylabel('Real')
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'matriz_confusao.png'))
+      plt.close()
+
+      # Precision vs Recall
+      plt.figure()
+      plt.plot(recall, precision, marker='.')
+      plt.xlabel('Recall')
+      plt.ylabel('Precision')
+      plt.title('Precision vs Recall')
+      plt.grid(True)
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'precision_vs_recall.png'))
+      plt.close()
+
+      # Curva ROC
+      plt.figure()
+      plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.4f}')
+      plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
+      plt.xlabel('False Positive Rate')
+      plt.ylabel('True Positive Rate')
+      plt.title('ROC Curve')
+      plt.legend()
+      plt.grid(True)
+      plt.tight_layout()
+      plt.savefig(os.path.join(result_dir, 'roc_curve.png'))
+      plt.close()
+
