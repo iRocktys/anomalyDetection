@@ -2,6 +2,7 @@ import os
 import json
 import numpy as np
 import torch
+import csv
 import torch.nn as nn
 import torch.nn.functional as F
 import matplotlib.pyplot as plt
@@ -113,84 +114,102 @@ class CNN(nn.Module):
 
 
     def train_model(self,
-                    train_loader: DataLoader,
-                    valid_loader: DataLoader,
-                    device: str = 'cpu',
-                    epochs: int = 20,
-                    lr: float = 1e-3,
-                    save_dir: str = 'output/CNN',
-                    threshold: float = 0.87,
-                    patience: int = 20):
-      
-        os.makedirs(save_dir, exist_ok=True)
-        self.to(device)
+                train_loader: DataLoader,
+                valid_loader: DataLoader,
+                device: str = 'cpu',
+                epochs: int = 20,
+                lr: float = 1e-3,
+                save_dir: str = 'output/CNN',
+                threshold: float = 0.87,
+                patience: int = 10):
 
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=2
-        )
-        criterion = nn.CrossEntropyLoss()
+      os.makedirs(save_dir, exist_ok=True)
+      self.to(device)
 
-        best_acc = 0.0
-        best_loss = float('inf')
-        epochs_no_improve = 0
+      optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+          optimizer, mode='min', factor=0.5, patience=2
+      )
+      criterion = nn.CrossEntropyLoss()
 
-        for ep in range(1, epochs + 1):
-            # --- Treinamento ---
-            self.train()
-            train_loss, n = 0.0, 0
-            for x, y in train_loader:
-                x, y = x.to(device), y.to(device)
-                optimizer.zero_grad()
-                out  = self(x)
-                loss = criterion(out, y)
-                loss.backward()
-                optimizer.step()
-                train_loss += loss.item() * x.size(0)
-                n += x.size(0)
-            train_loss /= n
+      best_acc = 0.0
+      best_loss = float('inf')
+      epochs_no_improve = 0
 
-            # --- Validação ---
-            self.eval()
-            val_loss, m = 0.0, 0
-            preds, trues = [], []
-            with torch.no_grad():
-                for x, y in valid_loader:
-                    x, y = x.to(device), y.to(device)
-                    out  = self(x)
-                    loss = criterion(out, y)
-                    val_loss += loss.item() * x.size(0)
-                    m += x.size(0)
-                    p = torch.argmax(out, dim=1).cpu().numpy()
-                    preds.extend(p)
-                    trues.extend(y.cpu().numpy())
-            val_loss /= m
-            val_acc  = accuracy_score(trues, preds)
+      # Preparar CSV
+      model_name = os.path.basename(save_dir.rstrip("/\\"))
+      epoch_log_path = os.path.join(save_dir, f"{model_name}_epoch_metrics.csv")
+      file_exists = os.path.isfile(epoch_log_path)
+      with open(epoch_log_path, mode='a', newline='') as f:
+          writer = csv.writer(f)
+          if not file_exists:
+              writer.writerow(['epoch', 'train_loss', 'val_loss', 'val_acc', 'precision', 'recall', 'f1_score'])
 
-            print(f"Epoch {ep}/{epochs} – "
-                  f"Train Loss: {train_loss:.4f}  "
-                  f"Val Loss:   {val_loss:.4f}  "
-                  f"Val Acc:    {val_acc:.4f}")
+      for ep in range(1, epochs + 1):
+          # --- Treinamento ---
+          self.train()
+          train_loss, n = 0.0, 0
+          for x, y in train_loader:
+              x, y = x.to(device), y.to(device)
+              optimizer.zero_grad()
+              out  = self(x)
+              loss = criterion(out, y)
+              loss.backward()
+              optimizer.step()
+              train_loss += loss.item() * x.size(0)
+              n += x.size(0)
+          train_loss /= n
 
-            # Ajusta taxa de aprendizado
-            scheduler.step(val_loss)
+          # --- Validação ---
+          self.eval()
+          val_loss, m = 0.0, 0
+          preds, trues = [], []
+          with torch.no_grad():
+              for x, y in valid_loader:
+                  x, y = x.to(device), y.to(device)
+                  out  = self(x)
+                  loss = criterion(out, y)
+                  val_loss += loss.item() * x.size(0)
+                  m += x.size(0)
+                  p = torch.argmax(out, dim=1).cpu().numpy()
+                  preds.extend(p)
+                  trues.extend(y.cpu().numpy())
+          val_loss /= m
+          val_acc = accuracy_score(trues, preds)
+          precision = precision_score(trues, preds, zero_division=0)
+          recall    = recall_score(trues, preds, zero_division=0)
+          f1        = f1_score(trues, preds, zero_division=0)
 
-            # Critério de salvamento
-            improved = (val_acc > best_acc) or (val_loss < best_loss)
-            if val_acc >= threshold and improved:
-                best_acc = max(val_acc, best_acc)
-                best_loss = min(val_loss, best_loss)
-                epochs_no_improve = 0
-                ckpt_path = os.path.join(save_dir, 'CNN_best_model.pth')
-                torch.save(self.state_dict(), ckpt_path)
-                print(f"→ Novo melhor modelo salvo em '{ckpt_path}'")
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    print(f"Early stopping após {ep} épocas sem melhora.")
-                    break
+          print(f"Epoch {ep}/{epochs} – "
+                f"Train Loss: {train_loss:.4f}  "
+                f"Val Loss:   {val_loss:.4f}  "
+                f"Val Acc:    {val_acc:.4f}")
 
-        return self
+          # Registrar métricas da época
+          with open(epoch_log_path, mode='a', newline='') as f:
+              writer = csv.writer(f)
+              writer.writerow([ep, train_loss, val_loss, val_acc, precision, recall, f1])
+
+          # Ajusta taxa de aprendizado
+          scheduler.step(val_loss)
+
+          # Critério de salvamento
+          improved = (val_acc > best_acc) or (val_loss < best_loss)
+          if val_acc >= threshold and improved:
+              best_acc = max(val_acc, best_acc)
+              best_loss = min(val_loss, best_loss)
+              epochs_no_improve = 0
+              ckpt_path = os.path.join(save_dir, 'CNN_best_model.pth')
+              torch.save(self.state_dict(), ckpt_path)
+              print(f"→ Novo melhor modelo salvo em '{ckpt_path}'")
+          else:
+              epochs_no_improve += 1
+              if epochs_no_improve >= patience:
+                  print(f"Early stopping após {ep} épocas sem melhora.")
+                  break
+
+      return self
+
 
     # def evaluate(self,
     #              loader: DataLoader,
@@ -248,8 +267,6 @@ class CNN(nn.Module):
       report  = classification_report(trues, preds, digits=4)
 
       # Exibir no console
-      print("\n=== Classification Report ===")
-      print(report)
       print(f"Acurácia:  {acc:.4f}")
       print(f"Precisão:  {prec:.4f}")
       print(f"Recall:    {rec:.4f}")
@@ -282,13 +299,11 @@ class CNN(nn.Module):
       cm = confusion_matrix(trues, preds)
       plt.figure(figsize=(8, 6))  # ← aumenta o tamanho da figura
       sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', annot_kws={"size": 13})  # ← aumenta tamanho dos números
-      plt.title('Matriz de Confusão', fontsize=14)
-      plt.xlabel('Predito', fontsize=12)
-      plt.ylabel('Real', fontsize=12)
-      plt.xticks(fontsize=11)
-      plt.yticks(fontsize=11)
+      plt.xlabel('Predito', fontsize=14)
+      plt.ylabel('Real', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'CNN_matriz_confusao.png'))
       plt.savefig(os.path.join(result_dir, 'CNN_matriz_confusao.pdf'))
       plt.close()
 
@@ -296,10 +311,10 @@ class CNN(nn.Module):
       precision, recall, _ = precision_recall_curve(trues, probs)
       plt.figure()
       plt.plot(recall, precision, marker='.')
-      plt.xlabel('Recall')
-      plt.ylabel('Precision')
-      plt.title('Precision vs Recall')
-      plt.grid(True)
+      plt.xlabel('Recall', fontsize=14)
+      plt.ylabel('Precision', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.tight_layout()
       plt.savefig(os.path.join(result_dir, 'CNN_precision_vs_recall.pdf'))
       plt.close()
@@ -308,11 +323,11 @@ class CNN(nn.Module):
       plt.figure()
       plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.4f}')
       plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-      plt.xlabel('False Positive Rate')
-      plt.ylabel('True Positive Rate')
-      plt.title('ROC Curve')
+      plt.xlabel('False Positive Rate', fontsize=14)
+      plt.ylabel('True Positive Rate', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.legend()
-      plt.grid(True)
       plt.tight_layout()
       plt.savefig(os.path.join(result_dir, 'CNN_roc_curve.pdf'))
       plt.close()

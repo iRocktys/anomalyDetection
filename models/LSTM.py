@@ -1,6 +1,7 @@
 import os
 import json
 import numpy as np
+import csv
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -46,89 +47,106 @@ class LSTM(nn.Module):
         return self.fc(out[:, -1, :])
 
     def train_model(self,
-                    train_loader: DataLoader,
-                    valid_loader: DataLoader,
-                    device: str = 'cpu',
-                    epochs: int = 100,
-                    lr: float = 1e-3,
-                    save_dir: str = 'output/LSTM',
-                    threshold: float = 0.87,
-                    patience: int = 5):
-        """
-        Treina a LSTM com EarlyStopping e ReduceLROnPlateau.
-        Salva sempre no mesmo arquivo 'LSTM_best_model.pth' quando:
-          - val_acc >= threshold
-          - E val_acc > best_acc OU val_loss < best_loss
-        """
-        os.makedirs(save_dir, exist_ok=True)
-        optimizer = torch.optim.Adam(self.parameters(), lr=lr)
-        scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-            optimizer, mode='min', factor=0.5, patience=2
-        )
-        criterion = nn.CrossEntropyLoss()
+                train_loader: DataLoader,
+                valid_loader: DataLoader,
+                device: str = 'cpu',
+                epochs: int = 100,
+                lr: float = 1e-3,
+                save_dir: str = 'output/LSTM',
+                threshold: float = 0.87,
+                patience: int = 5):
+      """
+      Treina a LSTM com EarlyStopping e ReduceLROnPlateau.
+      Salva sempre no mesmo arquivo 'LSTM_best_model.pth' quando:
+        - val_acc >= threshold
+        - E val_acc > best_acc OU val_loss < best_loss
+      """
 
-        best_acc = 0.0
-        best_loss = float('inf')
-        epochs_no_improve = 0
+      os.makedirs(save_dir, exist_ok=True)
+      optimizer = torch.optim.Adam(self.parameters(), lr=lr)
+      scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+          optimizer, mode='min', factor=0.5, patience=2
+      )
+      criterion = nn.CrossEntropyLoss()
 
-        for ep in range(1, epochs + 1):
-            # — treinamento —
-            self.train().to(device)
-            total_loss, n = 0.0, 0
-            for x, y in train_loader:
-                x, y = x.to(device), y.to(device)
-                optimizer.zero_grad()
-                logits = self(x)
-                loss = criterion(logits, y)
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item() * x.size(0)
-                n += x.size(0)
-            train_loss = total_loss / n
+      best_acc = 0.0
+      best_loss = float('inf')
+      epochs_no_improve = 0
 
-            # — validação —
-            self.eval().to(device)
-            val_loss, m = 0.0, 0
-            preds, trues = [], []
-            with torch.no_grad():
-                for x, y in valid_loader:
-                    x, y = x.to(device), y.to(device)
-                    out = self(x)
-                    loss = criterion(out, y)
-                    val_loss += loss.item() * x.size(0)
-                    m += x.size(0)
-                    p = torch.argmax(out, dim=1).cpu().numpy()
-                    preds.extend(p)
-                    trues.extend(y.cpu().numpy())
-            val_loss /= m
-            val_acc  = accuracy_score(trues, preds)
-            val_f1   = f1_score(trues, preds, average='weighted')
+      # Preparar CSV de métricas por época
+      model_name = os.path.basename(save_dir.rstrip("/\\"))
+      epoch_log_path = os.path.join(save_dir, f"{model_name}_epoch_metrics.csv")
+      file_exists = os.path.isfile(epoch_log_path)
+      with open(epoch_log_path, mode='a', newline='') as f:
+          writer = csv.writer(f)
+          if not file_exists:
+              writer.writerow(['epoch', 'train_loss', 'val_loss', 'val_acc', 'precision', 'recall', 'f1_score'])
 
-            print(f"Epoch {ep}/{epochs} – "
-                  f"Train Loss: {train_loss:.4f}  "
-                  f"Val Loss: {val_loss:.4f}  "
-                  f"Val Acc: {val_acc:.4f}  "
-                  f"Val F1: {val_f1:.4f}")
+      for ep in range(1, epochs + 1):
+          # — treinamento —
+          self.train().to(device)
+          total_loss, n = 0.0, 0
+          for x, y in train_loader:
+              x, y = x.to(device), y.to(device)
+              optimizer.zero_grad()
+              logits = self(x)
+              loss = criterion(logits, y)
+              loss.backward()
+              optimizer.step()
+              total_loss += loss.item() * x.size(0)
+              n += x.size(0)
+          train_loss = total_loss / n
 
-            # scheduler ajusta lr pela perda de validação
-            scheduler.step(val_loss)
+          # — validação —
+          self.eval().to(device)
+          val_loss, m = 0.0, 0
+          preds, trues = [], []
+          with torch.no_grad():
+              for x, y in valid_loader:
+                  x, y = x.to(device), y.to(device)
+                  out = self(x)
+                  loss = criterion(out, y)
+                  val_loss += loss.item() * x.size(0)
+                  m += x.size(0)
+                  p = torch.argmax(out, dim=1).cpu().numpy()
+                  preds.extend(p)
+                  trues.extend(y.cpu().numpy())
+          val_loss /= m
+          val_acc  = accuracy_score(trues, preds)
+          precision = precision_score(trues, preds, zero_division=0)
+          recall = recall_score(trues, preds, zero_division=0)
+          f1 = f1_score(trues, preds, zero_division=0)
 
-            # critério de salvamento
-            improved = (val_acc > best_acc) or (val_loss < best_loss)
-            if val_acc >= threshold and improved:
-                best_acc = max(val_acc, best_acc)
-                best_loss = min(val_loss, best_loss)
-                epochs_no_improve = 0
-                ckpt_path = os.path.join(save_dir, 'LSTM_best_model.pth')
-                torch.save(self.state_dict(), ckpt_path)
-                print(f"→ Novo melhor modelo salvo em '{ckpt_path}'")
-            else:
-                epochs_no_improve += 1
-                if epochs_no_improve >= patience:
-                    print(f"Early stopping após {ep} épocas sem melhora.")
-                    break
+          print(f"Epoch {ep}/{epochs} – "
+                f"Train Loss: {train_loss:.4f}  "
+                f"Val Loss: {val_loss:.4f}  "
+                f"Val Acc: {val_acc:.4f}")
 
-        return self
+          # Salvar métricas da época no CSV
+          with open(epoch_log_path, mode='a', newline='') as f:
+              writer = csv.writer(f)
+              writer.writerow([ep, train_loss, val_loss, val_acc, precision, recall, f1])
+
+          # scheduler ajusta lr pela perda de validação
+          scheduler.step(val_loss)
+
+          # critério de salvamento
+          improved = (val_acc > best_acc) or (val_loss < best_loss)
+          if val_acc >= threshold and improved:
+              best_acc = max(val_acc, best_acc)
+              best_loss = min(val_loss, best_loss)
+              epochs_no_improve = 0
+              ckpt_path = os.path.join(save_dir, 'LSTM_best_model.pth')
+              torch.save(self.state_dict(), ckpt_path)
+              print(f"→ Novo melhor modelo salvo em '{ckpt_path}'")
+          else:
+              epochs_no_improve += 1
+              if epochs_no_improve >= patience:
+                  print(f"Early stopping após {ep} épocas sem melhora.")
+                  break
+
+      return self
+
 
     # def evaluate(self,
     #              loader: DataLoader,
@@ -219,36 +237,37 @@ class LSTM(nn.Module):
 
       # Matriz de confusão
       cm = confusion_matrix(trues, preds)
-      plt.figure()
-      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-      plt.title('Matriz de Confusão')
-      plt.xlabel('Predito')
-      plt.ylabel('Real')
+      plt.figure(figsize=(8, 6))  # ← aumenta o tamanho da figura
+      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', annot_kws={"size": 13})  # ← aumenta tamanho dos números
+      plt.xlabel('Predito', fontsize=14)
+      plt.ylabel('Real', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'matriz_confusao.png'))
+      plt.savefig(os.path.join(result_dir, 'LSTM_matriz_confusao.pdf'))
       plt.close()
 
       # Precision vs Recall
       precision, recall, _ = precision_recall_curve(trues, probs)
       plt.figure()
       plt.plot(recall, precision, marker='.')
-      plt.xlabel('Recall')
-      plt.ylabel('Precision')
-      plt.title('Precision vs Recall')
-      plt.grid(True)
+      plt.xlabel('Recall', fontsize=14)
+      plt.ylabel('Precision', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'precision_vs_recall.png'))
+      plt.savefig(os.path.join(result_dir, 'LSTM_precision_vs_recall.pdf'))
       plt.close()
 
       # ROC Curve
       plt.figure()
       plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.4f}')
       plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-      plt.xlabel('False Positive Rate')
-      plt.ylabel('True Positive Rate')
-      plt.title('ROC Curve')
+      plt.xlabel('False Positive Rate', fontsize=14)
+      plt.ylabel('True Positive Rate', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.legend()
-      plt.grid(True)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'roc_curve.png'))
+      plt.savefig(os.path.join(result_dir, 'LSTM_roc_curve.pdf'))
       plt.close()

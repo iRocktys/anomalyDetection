@@ -6,8 +6,16 @@ import torch.nn.functional as F
 import joblib
 from sklearn.decomposition import PCA
 from sklearn.svm import SVC
-from sklearn.metrics import accuracy_score, classification_report
 from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+import seaborn as sns
+import json
+from sklearn.metrics import (
+    accuracy_score, precision_score, recall_score, f1_score,
+    roc_curve, auc, precision_recall_curve, confusion_matrix,
+    classification_report
+)
+import csv
 
 class ModelHybridAttnSVM(nn.Module):
     def __init__(self,
@@ -87,7 +95,7 @@ class ModelHybridAttnSVM(nn.Module):
                 lr: float = 1e-3,
                 save_dir: str = 'output/Hybrid',
                 threshold: float = 0.87,
-                patience: int = 15):
+                patience: int = 10):
       """
       Treina CNN+LSTM com Early Stopping + ReduceLROnPlateau,
       salvando checkpoints somente quando:
@@ -100,7 +108,7 @@ class ModelHybridAttnSVM(nn.Module):
       scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer,
                                                             mode='min',
                                                             factor=0.5,
-                                                            patience=20)
+                                                            patience=10)
       criterion = nn.CrossEntropyLoss()
 
       best_acc = threshold
@@ -138,11 +146,26 @@ class ModelHybridAttnSVM(nn.Module):
                   trues.extend(y.cpu().numpy())
           val_loss /= val_n
           val_acc  = accuracy_score(trues, preds)
+          precision = precision_score(trues, preds, zero_division=0)
+          recall = recall_score(trues, preds, zero_division=0)
+          f1 = f1_score(trues, preds, zero_division=0)
+
 
           print(f"Epoch {ep}/{epochs} – "
                 f"Train Loss: {train_loss:.4f}  "
                 f"Val Loss: {val_loss:.4f}  "
                 f"Val Acc: {val_acc:.4f}")
+          
+          # CSV por época - log simples do treinamento
+          model_name = os.path.basename(save_dir.rstrip("/\\"))
+          epoch_log_path = os.path.join(save_dir, f"{model_name}_epoch_metrics.csv")
+          file_exists = os.path.isfile(epoch_log_path)
+          with open(epoch_log_path, mode='a', newline='') as f:
+              writer = csv.writer(f)
+              if not file_exists:
+                  writer.writerow(['epoch', 'train_loss', 'val_loss', 'val_acc', 'precision', 'recall', 'f1_score'])
+              writer.writerow([ep, train_loss, val_loss, val_acc, precision, recall, f1])
+
 
           # Ajusta lr se necessário
           scheduler.step(val_loss)
@@ -166,32 +189,51 @@ class ModelHybridAttnSVM(nn.Module):
 
 
     def train_svm(self,
-                  train_loader: DataLoader,
-                  pca_components: int = 30,
-                  svm_C: float = 1.0,
-                  device: str = 'cpu',
-                  pca_path: str = 'output/Hybrid/pca.joblib',
-                  svm_path: str = 'output/Hybrid/hybrid_svm.joblib') -> SVC:
-        """
-        Extrai features, aplica PCA e treina SVM. Retorna o modelo SVM.
-        """
-        self.to(device).eval()
-        feats, trues = [], []
-        for x, y in train_loader:
-            feat = self.extract_features(x)
-            feats.append(feat)
-            trues.append(y.cpu().numpy())
-        X = np.vstack(feats)
-        y = np.concatenate(trues)
+              train_loader: DataLoader,
+              pca_components: int = 30,
+              svm_C: float = 1.0,
+              device: str = 'cpu',
+              pca_path: str = 'output/Hybrid/pca.joblib',
+              svm_path: str = 'output/Hybrid/hybrid_svm.joblib') -> SVC:
+      """
+      Extrai features, aplica PCA e treina SVM. Salva artefatos e métricas.
+      """
+      self.to(device).eval()
+      feats, trues = [], []
+      for x, y in train_loader:
+          feat = self.extract_features(x)
+          feats.append(feat)
+          trues.append(y.cpu().numpy())
+      X = np.vstack(feats)
+      y = np.concatenate(trues)
 
-        pca = PCA(n_components=pca_components)
-        X_pca = pca.fit_transform(X)
-        svm = SVC(kernel='rbf', C=svm_C, probability=True)
-        svm.fit(X_pca, y)
+      # PCA e SVM
+      pca = PCA(n_components=pca_components)
+      X_pca = pca.fit_transform(X)
+      svm = SVC(kernel='rbf', C=svm_C, probability=True)
+      svm.fit(X_pca, y)
 
-        joblib.dump(pca, pca_path)
-        joblib.dump(svm, svm_path)
-        return svm
+      # Salva os modelos
+      joblib.dump(pca, pca_path)
+      joblib.dump(svm, svm_path)
+
+      # Avaliação
+      y_pred = svm.predict(X_pca)
+      acc = accuracy_score(y, y_pred)
+      prec = precision_score(y, y_pred, zero_division=0)
+      rec = recall_score(y, y_pred, zero_division=0)
+      f1 = f1_score(y, y_pred, zero_division=0)
+
+      # Salvar CSV com métricas
+      os.makedirs('output/resultados', exist_ok=True)
+      svm_csv_path = os.path.join('output/resultados', 'svm_training_metrics.csv')
+      with open(svm_csv_path, mode='w', newline='') as f:
+          writer = csv.writer(f)
+          writer.writerow(['accuracy', 'precision', 'recall', 'f1_score'])
+          writer.writerow([acc, prec, rec, f1])
+
+      return svm
+
 
     # def evaluate(self,
     #              loader: DataLoader,
@@ -224,18 +266,11 @@ class ModelHybridAttnSVM(nn.Module):
       """
       Avalia o pipeline CNN→LSTM→PCA→SVM e gera métricas, gráficos e arquivos.
       """
-      import matplotlib.pyplot as plt
-      import seaborn as sns
-      import json
-      from sklearn.metrics import (
-          accuracy_score, precision_score, recall_score, f1_score, roc_curve,
-          auc, precision_recall_curve, confusion_matrix, classification_report
-      )
 
       self.to(device).eval()
       pca = joblib.load(pca_path)
       svm = joblib.load(svm_path)
-      feats, trues, probs = [], [], []
+      feats, trues = [], []
 
       for x, y in loader:
           feat = self.extract_features(x)
@@ -244,33 +279,30 @@ class ModelHybridAttnSVM(nn.Module):
 
       X = np.vstack(feats)
       y_true = np.array(trues)
-      X_pca  = pca.transform(X)
+      X_pca = pca.transform(X)
       y_pred = svm.predict(X_pca)
       y_proba = svm.predict_proba(X_pca)[:, 1]
 
-      # Métricas principais
-      acc     = accuracy_score(y_true, y_pred)
-      prec    = precision_score(y_true, y_pred)
-      rec     = recall_score(y_true, y_pred)
-      f1      = f1_score(y_true, y_pred)
+      acc = accuracy_score(y_true, y_pred)
+      prec = precision_score(y_true, y_pred)
+      rec = recall_score(y_true, y_pred)
+      f1 = f1_score(y_true, y_pred)
       fpr, tpr, _ = roc_curve(y_true, y_proba)
       roc_auc = auc(fpr, tpr)
-      report  = classification_report(y_true, y_pred, digits=4)
-      precision, recall, _ = precision_recall_curve(y_true, y_proba)
+      report = classification_report(y_true, y_pred, digits=4)
+      precision_arr, recall_arr, _ = precision_recall_curve(y_true, y_proba)
 
       result_dir = os.path.join('output', 'resultados', 'Hybrid')
       os.makedirs(result_dir, exist_ok=True)
 
-      # Imprimir no terminal
-      print("\n=== Classification Report ===")
-      print(report)
+      # Terminal
       print(f"Acurácia:  {acc:.4f}")
       print(f"Precisão:  {prec:.4f}")
       print(f"Recall:    {rec:.4f}")
       print(f"F1-Score:  {f1:.4f}")
       print(f"AUC:       {roc_auc:.4f}")
 
-      # Salvar em texto
+      # Salvar relatório de classificação
       with open(os.path.join(result_dir, 'classification_report.txt'), 'w') as f:
           f.write("=== Classification Report ===\n")
           f.write(report)
@@ -281,7 +313,7 @@ class ModelHybridAttnSVM(nn.Module):
           f.write(f"F1-Score:       {f1:.4f}\n")
           f.write(f"AUC:            {roc_auc:.4f}\n")
 
-      # Salvar métricas numéricas em JSON
+      # Salvar métricas em JSON
       with open(os.path.join(result_dir, 'metrics.json'), 'w') as f:
           json.dump({
               'acuracia': acc,
@@ -291,38 +323,41 @@ class ModelHybridAttnSVM(nn.Module):
               'auc': roc_auc
           }, f, indent=4)
 
-      # Matriz de Confusão
+      # Matriz de confusão
       cm = confusion_matrix(y_true, y_pred)
-      plt.figure()
-      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues')
-      plt.title('Matriz de Confusão')
-      plt.xlabel('Predito')
-      plt.ylabel('Real')
+      plt.figure(figsize=(8, 6))
+      sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', annot_kws={"size": 13})
+      plt.xlabel('Predito', fontsize=14)
+      plt.ylabel('Real', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'matriz_confusao.png'))
+      plt.savefig(os.path.join(result_dir, 'Hybrid_matriz_confusao.pdf'))
       plt.close()
 
       # Precision vs Recall
       plt.figure()
-      plt.plot(recall, precision, marker='.')
-      plt.xlabel('Recall')
-      plt.ylabel('Precision')
-      plt.title('Precision vs Recall')
+      plt.plot(recall_arr, precision_arr, marker='.')
+      plt.xlabel('Recall', fontsize=14)
+      plt.ylabel('Precision', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.grid(True)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'precision_vs_recall.png'))
+      plt.savefig(os.path.join(result_dir, 'Hybrid_precision_vs_recall.pdf'))
       plt.close()
 
-      # Curva ROC
+      # ROC Curve
       plt.figure()
       plt.plot(fpr, tpr, label=f'AUC = {roc_auc:.4f}')
       plt.plot([0, 1], [0, 1], linestyle='--', color='gray')
-      plt.xlabel('False Positive Rate')
-      plt.ylabel('True Positive Rate')
-      plt.title('ROC Curve')
+      plt.xlabel('False Positive Rate', fontsize=14)
+      plt.ylabel('True Positive Rate', fontsize=14)
+      plt.xticks(fontsize=12)
+      plt.yticks(fontsize=12)
       plt.legend()
-      plt.grid(True)
       plt.tight_layout()
-      plt.savefig(os.path.join(result_dir, 'roc_curve.png'))
+      plt.savefig(os.path.join(result_dir, 'Hybrid_roc_curve.pdf'))
       plt.close()
+
 
