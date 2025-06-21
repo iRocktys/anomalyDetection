@@ -210,6 +210,8 @@ class ModelHybridAttnSVM(nn.Module):
       # PCA e SVM
       pca = PCA(n_components=pca_components)
       X_pca = pca.fit_transform(X)
+      print(f"[INFO] Dimensão original: {X.shape[1]}")
+      print(f"[INFO] Dimensão reduzida: {X_pca.shape[1]}")
       svm = SVC(kernel='rbf', C=svm_C, probability=True)
       svm.fit(X_pca, y)
 
